@@ -1,10 +1,10 @@
 import streamlit as st
 import google.generativeai as genai
-import os
+from google.generativeai.types import Tool
 import time
 from io import BytesIO
 
-# Membaca pustaka pembaca PDF opsional (aman jika belum diinstal)
+# Try to import pypdf for the Contextual Grounding feature
 try:
     import pypdf
     PDF_READER_AVAILABLE = True
@@ -12,249 +12,195 @@ except ImportError:
     PDF_READER_AVAILABLE = False
 
 # =====================================================================
-# 1. KONFIGURASI HALAMAN & DESIGN SYSTEM (CSS)
+# 1. PAGE CONFIGURATION & UI STYLING
 # =====================================================================
 st.set_page_config(
-    page_title="MathBuddy PjBL - Asisten Guru Matematika SD",
-    page_icon="📐",
+    page_title="GenAI Math",
+    page_icon="🤖",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# Custom Premium CSS untuk menyesuaikan tema pendidikan & kemudahan baca
 st.markdown("""
 <style>
-    /* Styling Umum */
-    .main-header {
-        font-size: 2.2rem;
-        color: #1E3A8A;
-        font-weight: 700;
-        margin-bottom: 0.5rem;
-    }
-    .sub-header {
-        font-size: 1.1rem;
-        color: #4B5563;
-        margin-bottom: 2rem;
-    }
-    .badge-research {
-        background-color: #E0F2FE;
-        color: #0369A1;
-        padding: 0.25rem 0.75rem;
-        border-radius: 9999px;
-        font-size: 0.85rem;
-        font-weight: 600;
-        display: inline-block;
-        margin-bottom: 1rem;
-    }
-    /* Kotak Informasi Proyek */
-    .project-card {
-        background-color: #F8FAFC;
-        border-left: 5px solid #3B82F6;
-        padding: 1.2rem;
-        border-radius: 0.5rem;
-        margin-bottom: 1rem;
-    }
-    .project-title {
-        font-weight: 700;
-        color: #1E293B;
-        font-size: 1.1rem;
-        margin-bottom: 0.5rem;
-    }
+    .main-header { font-size: 2.2rem; color: #1E3A8A; font-weight: 700; margin-bottom: 0.2rem; }
+    .sub-header { font-size: 1.1rem; color: #4B5563; margin-bottom: 2rem; }
+    .badge-research { background-color: #E0F2FE; color: #0369A1; padding: 0.3rem 0.8rem; border-radius: 9999px; font-size: 0.85rem; font-weight: 600; display: inline-block; margin-bottom: 1rem; }
+    .stChatMessage { border-radius: 10px; }
 </style>
 """, unsafe_allow_html=True)
 
 # =====================================================================
-# 2. STATUS PERCAKAPAN & MEMORI (SESSION STATE)
+# 2. SYSTEM PROMPT (RESEARCH PARAMETERS)
+# =====================================================================
+SYSTEM_PROMPT = """
+[ROLE & EXPERTISE]
+You are "MathBuddy-PjBL", an artificial intelligence (AI) acting as a specialized Teacher Assistant for Primary School Mathematics in Indonesia. You are an expert in the Indonesian "Kurikulum Merdeka" (Independent Curriculum), child cognitive development psychology (specifically Piaget's concrete-operational stage for ages 7-12), and a specialist in implementing the Project-Based Learning (PjBL) model.
+
+[CORE PURPOSE & RESEARCH GOAL]
+Your primary objective is to assist teachers in constructing, designing, and implementing PjBL modules and classroom activities. The main focus of each project must center on transforming abstract mathematics concepts (such as fractions, place value, long division, and 3D geometry nets) into physical, concrete, contextual, and meaningful experiences for students, explicitly supported by Generative AI integration throughout the process.
+
+[DOMAIN KNOWLEDGE & CONTEXT GROUNDING]
+1. Scope of Material: Strictly limited to Primary School Mathematics for Phase A (Grades 1-2), Phase B (Grades 3-4), and Phase C (Grades 5-6).
+2. Abstract Concepts Focus: Fractions, 3D geometry, place value systems, measurement/estimation, division as repeated subtraction, and basic data processing (charts/graphs).
+3. Contextual Grounding: If the user uploads a PDF document (such as a textbook or curriculum framework) or uses the Google Search tool, you MUST prioritize the facts, chapter sequences, and core competencies within those sources as your primary reference for generating answers.
+
+[CREATIVE CONFIGURATION & PARAMETERS]
+- Tone & Style: Friendly, educational, collaborative, enthusiastic about teaching, and highly solution-oriented. Always address the user warmly as "Wonderful Teacher" or "Great Teacher".
+- Temperature: Maintained at a low level (0.3) to ensure strict conceptual accuracy of mathematical formulas without hallucination, while remaining creative in designing physical, hands-on activities for students.
+- Pedagogical Approach: Always recommend using low-cost, readily available, and recycled concrete objects from the child's daily environment (e.g., used cardboard, plastic straws, bottle caps, origami paper, or fruits).
+
+[OUTPUT STRUCTURE - PJBL SYNTAX STANDARDS]
+Every time a teacher asks for a project design, lesson plan template, or module solution, you MUST break it down sequentially using the 6 standard PjBL Syntaxes used in Indonesian education:
+1. Step 1: Essential Question -> Craft a real-world, problem-based trigger question to stimulate critical thinking.
+2. Step 2: Project Design -> Outline the rules of the project, group distributions, and the concrete physical tools/materials needed.
+3. Step 3: Scheduling -> Create a realistic timeline for project completion, both inside the classroom and at home.
+4. Step 4: Monitoring -> Design a teacher control sheet and specify how Generative AI can be used to provide scaffolding/guidance when students hit a roadblock.
+5. Step 5: Assessing the Outcome -> Establish evaluation criteria or a rubric for the physical product made by the students, measuring their deep understanding of the math concept behind it.
+6. Step 6: Reflection -> Formulate a post-project discussion guide to clear up any remaining abstract mathematical misconceptions.
+
+[AI-SUPPORTED LEARNING INTEGRATION FEATURE]
+You must provide explicit recommendations to the teacher on how to integrate Generative AI tools (e.g., guiding students to use text-to-image prompts for 3D net visualization, or asking a text-LLM for research ideas) as a tool for student groups to conduct independent research or validate their project designs during the planning and monitoring phases.
+
+[CONSTRAINTS & GUARDRAILS]
+1. NEVER provide answers consisting solely of raw numbers or theoretical formulas without explaining the accompanying physical/hands-on activity. Remember, the core of this research is overcoming abstraction.
+2. If the user asks about topics outside of Primary School Mathematics or outside the scope of the uploaded curriculum document, decline politely by saying: "I apologize, Great Teacher, but that topic is outside our current focus on developing concrete PjBL models for abstract primary school math concepts. Let us return to designing engaging primary math projects."
+3. Strictly bound all mathematical explanations to the cognitive limits of primary school students (do not use advanced algebra, calculus notation, or overly complex mathematical symbols).
+"""
+
+# =====================================================================
+# 3. SESSION STATE INITIALIZATION
 # =====================================================================
 if "messages" not in st.session_state:
     st.session_state.messages = [
-        {"role": "assistant", "content": "Halo Bapak/Ibu Guru Hebat! 👋 Saya **MathBuddy-PjBL**, asisten AI yang dirancang khusus untuk membantu Anda mengimplementasikan model pembelajaran berbasis proyek (PjBL) guna meruntuhkan keabstrakan konsep matematika SD. \n\nSilakan pilih topik di bilah samping atau tanyakan ide proyek matematika di sini!"}
+        {"role": "assistant", "content": "Greetings, Wonderful Teacher! 👋 I am **GenAI Math**, your AI companion for primary school mathematics. \n\nI am ready to help you transform abstract math concepts into engaging, concrete Project-Based Learning (PjBL) modules. Please configure the parameters on the sidebar or simply ask me a question to begin!"}
     ]
 if "pdf_context" not in st.session_state:
     st.session_state.pdf_context = ""
 
 # =====================================================================
-# 3. INTERFACE INTEGRASI GEMINI DENGAN EXPONENTIAL BACKOFF
-# =====================================================================
-def generate_gemini_response(prompt, system_instruction, api_key, context=""):
-    """Mengirim permintaan ke Gemini API dengan penanganan kesalahan dan percobaan ulang."""
-    if not api_key:
-        return "⚠️ Silakan masukkan **Gemini API Key** Anda di sidebar untuk mengaktifkan kecerdasan AI."
-    
-    try:
-        genai.configure(api_key=api_key)
-        # Menggunakan model standar yang disarankan lingkungan
-        model = genai.GenerativeModel(
-            model_name="gemini-2.5-flash",
-            generation_config={
-                "temperature": 0.3, # Diatur rendah agar konten matematika tetap akurat secara ilmiah
-                "top_p": 0.95,
-                "top_k": 40,
-            }
-        )
-        
-        # Gabungkan konteks PDF jika tersedia
-        full_prompt = prompt
-        if context:
-            full_prompt = f"Gunakan informasi dari dokumen kurikulum/buku teks berikut untuk membantu merumuskan jawaban.\n\nKonteks Dokumen:\n{context}\n\nPertanyaan/Instruksi Guru:\n{prompt}"
-            
-        # Inisialisasi percakapan dengan System Instruction
-        chat = model.start_chat(history=[])
-        
-        # Exponential backoff retry logic (Hingga 5 kali)
-        for attempt in range(5):
-            try:
-                response = chat.send_message(
-                    f"[SYSTEM INSTRUCTION]: {system_instruction}\n\n[USER INPUT]: {full_prompt}"
-                )
-                return response.text
-            except Exception as e:
-                if "429" in str(e) or "quota" in str(e).lower():
-                    sleep_time = 2 ** attempt
-                    time.sleep(sleep_time)
-                else:
-                    raise e
-        return "⚠️ Maaf, server sedang sibuk. Silakan coba kirim pesan Anda kembali."
-    except Exception as e:
-        return f"❌ Terjadi kesalahan pada API Gemini: {str(e)}"
-
-# =====================================================================
-# 4. KONTEN SIDEBAR (KONFIGURASI PARAMETER & FILE DATABASE)
+# 4. SIDEBAR CONFIGURATION
 # =====================================================================
 with st.sidebar:
-    st.image("https://images.unsplash.com/photo-1620712943543-bcc4688e7485?auto=format&fit=crop&w=300&q=80", caption="AI-Supported Learning Tool", use_container_width=True)
-    st.title("⚙️ Konfigurasi MathBuddy")
+    st.title("⚙️ GenAI-PjBL Configuration")
     
-    # Kunci API
-    api_key_input = st.text_input("1. Masukkan Gemini API Key:", type="password", help="Dapatkan kunci API Anda secara gratis di Google AI Studio.")
+    api_key = st.text_input("1. Enter Gemini API Key:", type="password")
     
     st.markdown("---")
-    st.subheader("🎒 Database Kurikulum & Materi")
+    st.subheader("🌐 Knowledge Sources")
     
-    # Fitur Unggah Buku Materi (Simulasi Database PDF)
-    uploaded_file = st.file_uploader("Unggah Buku Materi SD (PDF)", type=["pdf"])
-    if uploaded_file is not None:
-        if PDF_READER_AVAILABLE:
-            with st.spinner("Sedang mengekstrak materi buku matematika... 📖"):
-                try:
-                    pdf_reader = pypdf.PdfReader(BytesIO(uploaded_file.read()))
-                    extracted_text = ""
-                    # Membatasi ekstraksi 15 halaman pertama demi efisiensi token
-                    num_pages = min(len(pdf_reader.pages), 15)
-                    for i in range(num_pages):
-                        extracted_text += pdf_reader.pages[i].extract_text() + "\n"
-                    st.session_state.pdf_context = extracted_text
-                    st.success(f"✅ Berhasil memproses {num_pages} halaman buku!")
-                except Exception as e:
-                    st.error(f"Gagal membaca PDF: {e}")
-        else:
-            st.warning("Pustaka 'pypdf' tidak terpasang. Menjalankan mode simulasi berbasis teks.")
-            st.session_state.pdf_context = "Simulasi buku teks Matematika SD Kelas 4 Bab Pecahan dan Geometri Bangun Ruang."
+    # Toggle for Google Search Grounding
+    use_web_search = st.checkbox("Enable Google Web Search", value=False, help="Allow the AI to search the web (e.g., zenius.net) for the latest materials.")
+    
+    st.write("Upload a curriculum or textbook to ground the AI's knowledge.")
+    
+    uploaded_file = st.file_uploader("Upload PDF File", type=["pdf"])
+    if uploaded_file is not None and PDF_READER_AVAILABLE:
+        with st.spinner("Extracting knowledge..."):
+            try:
+                pdf_reader = pypdf.PdfReader(BytesIO(uploaded_file.read()))
+                text = ""
+                for page in range(min(len(pdf_reader.pages), 15)): # Limit to 15 pages to save context window
+                    text += pdf_reader.pages[page].extract_text() + "\n"
+                st.session_state.pdf_context = text
+                st.success("✅ Document processed successfully!")
+            except Exception as e:
+                st.error(f"Error reading PDF: {e}")
+    elif uploaded_file is not None and not PDF_READER_AVAILABLE:
+        st.warning("Please install 'pypdf' to use the document upload feature (`pip install pypdf`).")
 
     st.markdown("---")
-    st.subheader("🏫 Parameter PjBL")
+    st.subheader("🏫 PjBL Parameters")
+    phase = st.selectbox("Education Phase:", ["Phase A (Grades 1-2)", "Phase B (Grades 3-4)", "Phase C (Grades 5-6)"])
+    concept = st.selectbox("Abstract Concept Focus:", [
+        "Fractions (Parts of a Whole)",
+        "3D Geometry Nets",
+        "Place Value Systems",
+        "Division as Repeated Subtraction",
+        "Measurement & Estimation",
+        "Basic Data Processing"
+    ])
     
-    # Dropdown kelas dasar
-    kelas_selected = st.selectbox(
-        "Pilih Kelas:",
-        ["Kelas 1 (Fase A)", "Kelas 2 (Fase A)", "Kelas 3 (Fase B)", "Kelas 4 (Fase B)", "Kelas 5 (Fase C)", "Kelas 6 (Fase C)"]
-    )
-    
-    # Dropdown materi abstrak matematika SD
-    topik_abstrak = st.selectbox(
-        "Topik Matematika Abstrak:",
-        [
-            "Konsep Pecahan (Bagian dari Keseluruhan)",
-            "Nilai Tempat Satuan, Puluhan, Ratusan",
-            "Sifat Jaring-Jaring Bangun Ruang 3D",
-            "Pembagian sebagai Pengurangan Berulang",
-            "Pengukuran Sudut dan Estimasi",
-            "Pengolahan Data (Diagram & Grafik)"
-        ]
-    )
-    
-    # Pilihan template proyek siap pakai
-    st.subheader("💡 Template Proyek Instan")
-    generate_template = st.button("Rancang Proyek PjBL Instan")
+    if st.button("Generate Instant PjBL Module"):
+        prompt = f"Please create a complete PjBL module for {phase} focusing on the abstract concept of '{concept}'. Remember to follow the 6 PjBL Syntaxes and explicitly mention the integration of Generative AI."
+        st.session_state.messages.append({"role": "user", "content": prompt})
+        st.rerun()
 
 # =====================================================================
-# 5. AREA UTAMA: DESKRIPSI PENELITIAN & PERCAKAPAN CHAT
+# 5. MAIN CHAT INTERFACE & GEMINI API LOGIC
 # =====================================================================
-st.markdown('<div class="badge-research">🧬 MODEL PENELITIAN AKTIF: Generative AI-Supported PjBL di SD</div>', unsafe_allow_html=True)
-st.markdown('<h1 class="main-header">MathBuddy-PjBL</h1>', unsafe_allow_html=True)
-st.markdown('<p class="sub-header">Membantu Guru memetakan materi abstrak sekolah dasar ke dalam petualangan proyek dunia nyata yang konkret dan bermakna.</p>', unsafe_allow_html=True)
+st.markdown('<div class="badge-research">🔬 RESEARCH MODEL: GenAI-Supported PjBL</div>', unsafe_allow_html=True)
+st.markdown('<h1 class="main-header">GenAI Math</h1>', unsafe_allow_html=True)
+st.markdown('<p class="sub-header">Transforming abstract mathematics into concrete, physical, and meaningful experiences for primary school students.</p>', unsafe_allow_html=True)
 
-# Petunjuk penggunaan singkat bagi Guru / Peneliti
-with st.expander("ℹ️ Cara Kerja Sistem dalam Riset PjBL Anda", expanded=False):
-    st.markdown("""
-    Aplikasi ini bertindak sebagai **Scaffolding Tool (Alat Bantu Pendamping)** untuk guru dalam mendesain pembelajaran berbasis proyek. 
-    Langkah yang disarankan untuk guru selama riset:
-    1. **Tentukan Topik:** Pilih tingkatan kelas dan materi abstrak yang ingin diajarkan di bilah kiri.
-    2. **Desain Sintaks:** Gunakan tombol **'Rancang Proyek PjBL Instan'** untuk mendapatkan perencanaan komprehensif berstandar Kurikulum Merdeka.
-    3. **Konsultasikan Hambatan:** Tanyakan hambatan atau cara mengatasi miskonsepsi siswa langsung di kolom chat di bawah.
-    """)
-
-# SYSTEM INSTRUCTION UNTUK PROMPT REKAYASA (PROMPTING ENGINEERING)
-system_prompt = f"""
-Kamu adalah "MathBuddy-PjBL", seorang pakar kurikulum matematika SD, psikolog perkembangan anak, dan spesialis model pembelajaran Project-Based Learning (PjBL) di Indonesia.
-Fokus utamamu adalah membantu Guru merancang aktivitas pembelajaran berbasis proyek yang mengubah konsep matematika abstrak menjadi pengalaman fisik yang nyata (konkret) bagi siswa SD.
-
-Karakteristik Komunikasimu:
-1. Menggunakan sapaan ramah dan mendukung seperti "Bapak/Ibu Guru yang hebat".
-2. Gaya bahasa profesional, edukatif, inspiratif namun mudah dipahami.
-3. Selalu membagi rancangan proyek ke dalam 6 langkah sintaks PjBL standar Indonesia:
-   - Tahap 1: Pertanyaan Mendasar (Essential Question)
-   - Tahap 2: Mendesain Perencanaan Proyek (Project Design)
-   - Tahap 3: Menyusun Jadwal Pembuatan (Scheduling)
-   - Tahap 4: Memonitor Keaktifan dan Perkembangan Proyek (Monitoring)
-   - Tahap 5: Menguji Hasil / Presentasi (Assessing)
-   - Tahap 6: Evaluasi Pengalaman Belajar (Reflection)
-4. Pastikan proyek menggunakan bahan yang murah, mudah dicari di lingkungan sekitar anak (seperti kardus bekas, sedotan, botol plastik, atau kertas warna).
-5. Tunjukkan bagaimana teknologi Generative AI dapat digunakan oleh guru atau siswa di kelas untuk mendukung pengerjaan proyek tersebut.
-"""
-
-# Pembuatan aksi instan dari tombol Template Proyek
-if generate_template:
-    tanya_template = f"Buatkan modul rancangan pembelajaran PjBL lengkap untuk {kelas_selected} dengan topik abstrak '{topik_abstrak}'. Jabarkan langkah-langkah konkret sesuai 6 sintaks PjBL, bahan fisik yang dibutuhkan siswa, serta bagaimana asisten AI ini mendukung proses pengerjaannya!"
-    st.session_state.messages.append({"role": "user", "content": tanya_template})
-    
-    with st.spinner("Sedang merancang struktur proyek terbaik untuk Anda... 🛠️"):
-        jawaban_ai = generate_gemini_response(
-            prompt=tanya_template,
-            system_instruction=system_prompt,
-            api_key=api_key_input,
-            context=st.session_state.pdf_context
-        )
-        st.session_state.messages.append({"role": "assistant", "content": jawaban_ai})
-
-# Menampilkan Riwayat Obrolan Chat secara Responsif
+# Display Chat History
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-# Kolom Input Chat Interaktif di Bagian Bawah
-if prompt_user := st.chat_input("Tanyakan cara mengajarkan matematika abstrak, ide modul ajar, atau kembangkan proyek..."):
-    # Masukkan pertanyaan user ke dalam history
-    st.session_state.messages.append({"role": "user", "content": prompt_user})
+# User Chat Input
+if user_input := st.chat_input("Ask for an engaging PjBL idea, scaffolding technique, or lesson plan..."):
+    # Append User Message
+    st.session_state.messages.append({"role": "user", "content": user_input})
     with st.chat_message("user"):
-        st.markdown(prompt_user)
+        st.markdown(user_input)
         
-    # Generate respons dari AI
+    # Generate AI Response
     with st.chat_message("assistant"):
-        with st.spinner("Berpikir selaku Asisten PjBL... 🧠"):
-            jawaban_ai = generate_gemini_response(
-                prompt=prompt_user,
-                system_instruction=system_prompt,
-                api_key=api_key_input,
-                context=st.session_state.pdf_context
-            )
-            st.markdown(jawaban_ai)
-            st.session_state.messages.append({"role": "assistant", "content": jawaban_ai})
+        if not api_key:
+            st.error("⚠️ Please enter your Gemini API Key in the sidebar to activate the Assistant.")
+        else:
+            with st.spinner("Analyzing pedagogical frameworks... 🧠"):
+                try:
+                    # Configure API
+                    genai.configure(api_key=api_key)
+                    
+                    # Persiapkan Tools (Google Search)
+                    tools_config = []
+                    if use_web_search:
+                         # Menggunakan fitur bawaan Google Search API dari Gemini
+                         tools_config.append(Tool(google_search={}))
 
-# Tombol untuk mereset riwayat diskusi demi fleksibilitas riset
-st.markdown("<br><hr>", unsafe_allow_html=True)
-if st.button("🔄 Atur Ulang Sesi Percakapan"):
-    st.session_state.messages = [
-        {"role": "assistant", "content": "Sesi telah diatur ulang. Silakan pilih topik di bilah samping atau tanyakan ide proyek matematika di sini!"}
-    ]
+                    # Instantiate Model with Creative Parameters and Tools
+                    model = genai.GenerativeModel(
+                        model_name="gemini-2.5-flash",
+                        system_instruction=SYSTEM_PROMPT,
+                        tools=tools_config if use_web_search else None,
+                        generation_config={
+                            "temperature": 0.3, # Low temperature for conceptual accuracy
+                            "top_p": 0.95,
+                            "top_k": 20
+                        }
+                    )
+                    
+                    # Format history for Gemini (Mapping 'assistant' to 'model')
+                    gemini_history = []
+                    for m in st.session_state.messages[:-1]: # Exclude the current user input
+                        role = "model" if m["role"] == "assistant" else "user"
+                        gemini_history.append({"role": role, "parts": [m["content"]]})
+                    
+                    # Start Chat Session
+                    chat_session = model.start_chat(history=gemini_history)
+                    
+                    # Inject Contextual Grounding if PDF is uploaded
+                    final_prompt = user_input
+                    if st.session_state.pdf_context != "":
+                        final_prompt = f"CONTEXTUAL GROUNDING DOCUMENT:\n{st.session_state.pdf_context}\n\nUSER INSTRUCTION:\n{user_input}"
+                    
+                    # Jika menggunakan web search, tambahkan instruksi khusus agar mencari di situs tertentu (opsional)
+                    if use_web_search:
+                        final_prompt += "\n\n(Instruksi Tambahan: Jika diperlukan, silakan cari informasi tambahan di internet, misalnya dari situs pendidikan seperti zenius.net atau sumber terpercaya lainnya)."
+                    
+                    # Get Response
+                    response = chat_session.send_message(final_prompt)
+                    
+                    st.markdown(response.text)
+                    st.session_state.messages.append({"role": "assistant", "content": response.text})
+                    
+                except Exception as e:
+                    st.error(f"API Error: {str(e)}")
+
+# Clear memory button
+if st.sidebar.button("🔄 Reset Conversation Memory"):
+    st.session_state.messages = [st.session_state.messages[0]]
     st.rerun()
